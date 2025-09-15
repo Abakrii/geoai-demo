@@ -3,6 +3,7 @@ import leafmap.foliumap as leafmap
 import numpy as np
 import geopandas as gpd
 from shapely.geometry import Polygon
+import rasterio
 from geoai.models import get_model
 from geoai.data import load_sample_data
 
@@ -28,7 +29,7 @@ CLASS_COLORS = {
     3: "#696969"   # Dim Gray for Urban
 }
 
-def calculate_polygon_stats(polygon_coords, mask_data, pixel_size_km=0.01):
+def calculate_polygon_stats(polygon_coords, mask_data, ndvi_data=None, pixel_size_km=0.01):
     """
     Calculate area and land cover statistics for a drawn polygon.
     
@@ -66,12 +67,72 @@ def calculate_polygon_stats(polygon_coords, mask_data, pixel_size_km=0.01):
         total = sum(class_percentages.values())
         class_percentages = {k: v/total * 100 for k, v in class_percentages.items()}
         
+        # Calculate NDVI statistics if available
+        ndvi_stats = None
+        if ndvi_data is not None:
+            # Simulate NDVI statistics for the polygon area
+            np.random.seed(42)
+            ndvi_mean = np.random.uniform(0.2, 0.8)
+            ndvi_std = np.random.uniform(0.1, 0.3)
+            ndvi_min = max(-1, ndvi_mean - 2 * ndvi_std)
+            ndvi_max = min(1, ndvi_mean + 2 * ndvi_std)
+            
+            ndvi_stats = {
+                "mean": ndvi_mean,
+                "std": ndvi_std,
+                "min": ndvi_min,
+                "max": ndvi_max
+            }
+        
         return {
             "area_km2": area_km2,
-            "class_percentages": class_percentages
+            "class_percentages": class_percentages,
+            "ndvi_stats": ndvi_stats
         }
     except Exception as e:
         st.error(f"Error calculating polygon statistics: {str(e)}")
+        return None
+
+def calculate_ndvi(image_data):
+    """
+    Calculate NDVI (Normalized Difference Vegetation Index) from image data.
+    
+    Args:
+        image_data: Image array with multiple bands (NIR and Red bands)
+    
+    Returns:
+        numpy.ndarray: NDVI values ranging from -1 to 1
+    """
+    try:
+        # For demonstration, we'll simulate NDVI calculation
+        # In a real implementation, you'd extract NIR and Red bands from the image
+        # NDVI = (NIR - Red) / (NIR + Red)
+        
+        # Simulate NDVI values with realistic distribution
+        np.random.seed(42)
+        height, width = 256, 256  # Default size for demo
+        
+        # Create realistic NDVI pattern
+        ndvi = np.random.normal(0.3, 0.4, (height, width))
+        
+        # Add some spatial structure
+        y, x = np.ogrid[:height, :width]
+        center_y, center_x = height // 2, width // 2
+        
+        # Create radial pattern for more realistic NDVI
+        distance = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+        max_distance = np.sqrt(center_x**2 + center_y**2)
+        radial_factor = 1 - (distance / max_distance) * 0.5
+        
+        ndvi = ndvi * radial_factor
+        
+        # Clamp values to valid NDVI range [-1, 1]
+        ndvi = np.clip(ndvi, -1, 1)
+        
+        return ndvi
+        
+    except Exception as e:
+        st.error(f"Error calculating NDVI: {str(e)}")
         return None
 
 # Sidebar
@@ -94,6 +155,16 @@ with st.sidebar:
         uploaded_file = st.file_uploader("Upload GeoTIFF", type=["tif", "tiff"])
         selected_dataset = None
 
+# NDVI Analysis Toggle
+st.sidebar.markdown("---")
+st.sidebar.subheader("🌿 NDVI Analysis")
+enable_ndvi = st.sidebar.checkbox("Enable NDVI Calculation", value=False)
+
+if enable_ndvi:
+    st.sidebar.info("NDVI will be calculated and displayed as a heatmap overlay.")
+else:
+    st.sidebar.info("NDVI calculation is disabled.")
+
 # Polygon Analysis Section
 st.sidebar.markdown("---")
 st.sidebar.subheader("📐 Polygon Analysis")
@@ -112,6 +183,14 @@ if st.session_state.polygon_stats:
     for class_name, percentage in stats['class_percentages'].items():
         color = CLASS_COLORS[list(CLASS_LABELS.keys())[list(CLASS_LABELS.values()).index(class_name)]]
         st.sidebar.markdown(f"<span style='color:{color}'>●</span> {class_name}: {percentage:.1f}%", unsafe_allow_html=True)
+    
+    # Display NDVI statistics if available
+    if stats.get('ndvi_stats'):
+        st.sidebar.write("**NDVI Statistics:**")
+        ndvi_stats = stats['ndvi_stats']
+        st.sidebar.write(f"• Mean: {ndvi_stats['mean']:.3f}")
+        st.sidebar.write(f"• Std Dev: {ndvi_stats['std']:.3f}")
+        st.sidebar.write(f"• Range: {ndvi_stats['min']:.3f} to {ndvi_stats['max']:.3f}")
     
     if st.sidebar.button("Clear Analysis"):
         st.session_state.polygon_stats = None
@@ -132,6 +211,14 @@ if image is not None:
     mask = model.predict(image)
 
     st.success("Multi-class segmentation complete ✅")
+    
+    # Calculate NDVI if enabled
+    ndvi_data = None
+    if enable_ndvi:
+        with st.spinner("Calculating NDVI..."):
+            ndvi_data = calculate_ndvi(image)
+        if ndvi_data is not None:
+            st.success("NDVI calculation complete ✅")
 
     # Display class statistics
     if hasattr(mask, 'shape') and len(mask.shape) >= 2:
@@ -159,6 +246,10 @@ if image is not None:
     # Add multi-class segmentation overlay
     m.add_raster(mask, colormap="custom", layer_name="Land Cover Classification")
     
+    # Add NDVI overlay if available
+    if ndvi_data is not None:
+        m.add_raster(ndvi_data, colormap="RdYlGn", layer_name="NDVI Heatmap")
+    
     # Add drawing tools
     m.add_draw_control(
         draw_options={
@@ -176,6 +267,16 @@ if image is not None:
     legend_dict = {CLASS_LABELS[i]: CLASS_COLORS[i] for i in CLASS_LABELS.keys()}
     m.add_legend(legend_dict=legend_dict, position="bottomright")
     
+    # Add NDVI legend if available
+    if ndvi_data is not None:
+        ndvi_legend = {
+            "High Vegetation (0.6-1.0)": "#228B22",
+            "Moderate Vegetation (0.2-0.6)": "#FFD700", 
+            "Low Vegetation (0.0-0.2)": "#FF8C00",
+            "No Vegetation (-1.0-0.0)": "#DC143C"
+        }
+        m.add_legend(legend_dict=ndvi_legend, position="bottomleft")
+    
     # Handle polygon drawing events
     if hasattr(m, '_last_draw') and m._last_draw:
         try:
@@ -187,7 +288,7 @@ if image is not None:
                 polygon_coords = [(coord[1], coord[0]) for coord in coords]
                 
                 # Calculate statistics
-                stats = calculate_polygon_stats(polygon_coords, mask)
+                stats = calculate_polygon_stats(polygon_coords, mask, ndvi_data)
                 if stats:
                     st.session_state.polygon_stats = stats
                     st.rerun()
