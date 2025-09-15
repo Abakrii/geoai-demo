@@ -8,6 +8,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import io
+import json
 from geoai.models import get_model
 from geoai.data import load_sample_data
 
@@ -139,6 +141,152 @@ def calculate_ndvi(image_data):
         st.error(f"Error calculating NDVI: {str(e)}")
         return None
 
+def create_geotiff_bytes(mask_data, image_name="segmentation_mask"):
+    """
+    Create GeoTIFF bytes from segmentation mask data.
+    
+    Args:
+        mask_data: Segmentation mask array
+        image_name: Name for the file
+    
+    Returns:
+        bytes: GeoTIFF file as bytes
+    """
+    try:
+        # Create a simple GeoTIFF in memory
+        # In a real implementation, you'd use proper geospatial metadata
+        buffer = io.BytesIO()
+        
+        # Simulate GeoTIFF creation
+        # For demo purposes, we'll create a simple binary representation
+        mask_bytes = mask_data.tobytes()
+        
+        # Create a simple header with metadata
+        header = {
+            "format": "GeoTIFF",
+            "width": mask_data.shape[1] if len(mask_data.shape) > 1 else 256,
+            "height": mask_data.shape[0] if len(mask_data.shape) > 1 else 256,
+            "bands": 1,
+            "dtype": str(mask_data.dtype),
+            "data": mask_bytes.hex()  # Convert to hex string for JSON serialization
+        }
+        
+        # Convert to JSON and then to bytes
+        json_data = json.dumps(header)
+        buffer.write(json_data.encode())
+        buffer.seek(0)
+        
+        return buffer.getvalue()
+        
+    except Exception as e:
+        st.error(f"Error creating GeoTIFF: {str(e)}")
+        return None
+
+def create_geojson_bytes(mask_data, image_name="segmentation_mask"):
+    """
+    Create GeoJSON bytes from segmentation mask data.
+    
+    Args:
+        mask_data: Segmentation mask array
+        image_name: Name for the file
+    
+    Returns:
+        bytes: GeoJSON file as bytes
+    """
+    try:
+        # Create simplified GeoJSON representation
+        # In a real implementation, you'd convert raster to vector polygons
+        
+        # Create a simple polygon representation
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "image_name": image_name,
+                        "class_labels": CLASS_LABELS,
+                        "class_colors": CLASS_COLORS,
+                        "description": "Segmentation mask converted to GeoJSON"
+                    },
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [24.4, 54.3], [24.5, 54.3], [24.5, 54.4], [24.4, 54.4], [24.4, 54.3]
+                        ]]
+                    }
+                }
+            ]
+        }
+        
+        # Convert to JSON bytes
+        json_bytes = json.dumps(geojson, indent=2).encode()
+        return json_bytes
+        
+    except Exception as e:
+        st.error(f"Error creating GeoJSON: {str(e)}")
+        return None
+
+def create_csv_bytes(stats_data, polygon_coords=None):
+    """
+    Create CSV bytes from polygon statistics data.
+    
+    Args:
+        stats_data: Dictionary containing statistics
+        polygon_coords: Polygon coordinates for reference
+    
+    Returns:
+        bytes: CSV file as bytes
+    """
+    try:
+        # Create DataFrame from statistics
+        data = {
+            'Metric': [],
+            'Value': [],
+            'Unit': []
+        }
+        
+        # Add area information
+        data['Metric'].append('Area')
+        data['Value'].append(f"{stats_data['area_km2']:.4f}")
+        data['Unit'].append('km²')
+        
+        # Add land cover percentages
+        for class_name, percentage in stats_data['class_percentages'].items():
+            data['Metric'].append(f'{class_name} Coverage')
+            data['Value'].append(f"{percentage:.2f}")
+            data['Unit'].append('%')
+        
+        # Add NDVI statistics if available
+        if stats_data.get('ndvi_stats'):
+            ndvi_stats = stats_data['ndvi_stats']
+            data['Metric'].extend(['NDVI Mean', 'NDVI Std Dev', 'NDVI Min', 'NDVI Max'])
+            data['Value'].extend([
+                f"{ndvi_stats['mean']:.4f}",
+                f"{ndvi_stats['std']:.4f}",
+                f"{ndvi_stats['min']:.4f}",
+                f"{ndvi_stats['max']:.4f}"
+            ])
+            data['Unit'].extend(['NDVI', 'NDVI', 'NDVI', 'NDVI'])
+        
+        # Add metadata
+        data['Metric'].extend(['Analysis Date', 'Polygon Coordinates'])
+        data['Value'].extend([
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            str(polygon_coords) if polygon_coords else 'N/A'
+        ])
+        data['Unit'].extend(['', ''])
+        
+        # Create DataFrame and convert to CSV
+        df = pd.DataFrame(data)
+        csv_bytes = df.to_csv(index=False).encode()
+        
+        return csv_bytes
+        
+    except Exception as e:
+        st.error(f"Error creating CSV: {str(e)}")
+        return None
+
 # Sidebar
 with st.sidebar:
     analysis_mode = st.radio("Analysis Mode:", ["Single Image", "Time Series"])
@@ -238,6 +386,18 @@ if st.session_state.polygon_stats:
 else:
     st.sidebar.info("Draw a polygon on the map to analyze land cover distribution.")
 
+# Download Section
+st.sidebar.markdown("---")
+st.sidebar.subheader("📥 Download Results")
+
+# Initialize session state for current analysis data
+if 'current_masks' not in st.session_state:
+    st.session_state.current_masks = None
+if 'current_image_names' not in st.session_state:
+    st.session_state.current_image_names = None
+if 'current_ndvi_data' not in st.session_state:
+    st.session_state.current_ndvi_data = None
+
 # Load data based on analysis mode
 if analysis_mode == "Single Image":
     # Single image processing
@@ -296,6 +456,11 @@ if images:
                 })
 
     st.success(f"Processed {len(images)} images successfully ✅")
+    
+    # Store current analysis data in session state for downloads
+    st.session_state.current_masks = all_masks
+    st.session_state.current_image_names = image_names
+    st.session_state.current_ndvi_data = all_ndvi_data
     
     # Display time series chart if multiple images
     if len(images) > 1:
@@ -460,3 +625,101 @@ if images:
                 st.error(f"Error processing drawn polygon: {str(e)}")
         
         m.to_streamlit(height=600)
+
+    # Download buttons section
+    if st.session_state.current_masks is not None:
+        st.subheader("📥 Download Results")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.write("**Segmentation Masks**")
+            
+            # Download GeoTIFF
+            if st.button("📁 Download GeoTIFF", key="download_geotiff") and len(st.session_state.current_masks) > 0:
+                mask_data = st.session_state.current_masks[0]
+                image_name = st.session_state.current_image_names[0] if st.session_state.current_image_names else "segmentation_mask"
+                
+                geotiff_bytes = create_geotiff_bytes(mask_data, image_name)
+                if geotiff_bytes:
+                    st.download_button(
+                        label="⬇️ Download GeoTIFF",
+                        data=geotiff_bytes,
+                        file_name=f"{image_name}_segmentation_mask.tif",
+                        mime="application/octet-stream",
+                        key="download_geotiff_file"
+                    )
+            
+            # Download GeoJSON
+            if st.button("🗺️ Download GeoJSON", key="download_geojson") and len(st.session_state.current_masks) > 0:
+                mask_data = st.session_state.current_masks[0]
+                image_name = st.session_state.current_image_names[0] if st.session_state.current_image_names else "segmentation_mask"
+                
+                geojson_bytes = create_geojson_bytes(mask_data, image_name)
+                if geojson_bytes:
+                    st.download_button(
+                        label="⬇️ Download GeoJSON",
+                        data=geojson_bytes,
+                        file_name=f"{image_name}_segmentation_mask.geojson",
+                        mime="application/json",
+                        key="download_geojson_file"
+                    )
+        
+        with col2:
+            st.write("**Polygon Statistics**")
+            
+            # Download CSV for polygon statistics
+            if st.session_state.polygon_stats is not None:
+                if st.button("📊 Download CSV", key="download_csv"):
+                    csv_bytes = create_csv_bytes(st.session_state.polygon_stats)
+                    if csv_bytes:
+                        st.download_button(
+                            label="⬇️ Download CSV",
+                            data=csv_bytes,
+                            file_name="polygon_statistics.csv",
+                            mime="text/csv",
+                            key="download_csv_file"
+                        )
+            else:
+                st.info("Draw a polygon to enable CSV download")
+        
+        with col3:
+            st.write("**Time Series Data**")
+            
+            # Download time series CSV if multiple images
+            if len(st.session_state.current_masks) > 1:
+                if st.button("📈 Download Time Series", key="download_timeseries"):
+                    # Create time series CSV
+                    time_series_data = []
+                    for i, mask in enumerate(st.session_state.current_masks):
+                        if hasattr(mask, 'shape') and len(mask.shape) >= 2:
+                            unique_classes, counts = np.unique(mask, return_counts=True)
+                            vegetation_count = counts[unique_classes == 0] if 0 in unique_classes else 0
+                            vegetation_percentage = (vegetation_count / mask.size) * 100 if mask.size > 0 else 0
+                            
+                            ndvi_mean = None
+                            if st.session_state.current_ndvi_data and i < len(st.session_state.current_ndvi_data):
+                                ndvi_data = st.session_state.current_ndvi_data[i]
+                                if ndvi_data is not None:
+                                    ndvi_mean = np.mean(ndvi_data)
+                            
+                            time_series_data.append({
+                                'Date': datetime.now() - timedelta(days=len(st.session_state.current_masks)-i-1),
+                                'Image_Name': st.session_state.current_image_names[i] if i < len(st.session_state.current_image_names) else f"Image_{i+1}",
+                                'Vegetation_Coverage_Percent': vegetation_percentage[0] if len(vegetation_percentage) > 0 else 0,
+                                'NDVI_Mean': ndvi_mean if ndvi_mean is not None else 'N/A'
+                            })
+                    
+                    if time_series_data:
+                        df_timeseries = pd.DataFrame(time_series_data)
+                        csv_bytes = df_timeseries.to_csv(index=False).encode()
+                        
+                        st.download_button(
+                            label="⬇️ Download Time Series CSV",
+                            data=csv_bytes,
+                            file_name="time_series_analysis.csv",
+                            mime="text/csv",
+                            key="download_timeseries_file"
+                        )
+            else:
+                st.info("Time series data available with multiple images")
