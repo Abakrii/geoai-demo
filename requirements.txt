@@ -5,4 +5,5 @@ matplotlib
 rasterio
 torch
 torchvision
+shapely
 git+https://github.com/opengeos/geoai.git
