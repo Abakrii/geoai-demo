@@ -15,9 +15,9 @@ jobs:
         run: |
           git config --global user.email "you@example.com"
           git config --global user.name "Your Name"
-          git clone https://huggingface.co/spaces/YOUR_USERNAME/geoai-demo
+          git clone https://huggingface.co/spaces/Abdelrahmanbakry1111/geoai-demo
           rsync -av . geoai-demo/ --exclude '.git'
           cd geoai-demo
           git add .
           git commit -m "Update from GitHub"
-          git push https://YOUR_USERNAME:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/YOUR_USERNAME/geoai-demo main
+          git push https://YAbdelrahmanbakry1111:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/Abdelrahmanbakry1111/geoai-demo main
