@@ -2,7 +2,8 @@ name: Deploy to Hugging Face
 
 on:
   push:
-    branches: [ "main" ]  # change if your default branch is master
+    branches:
+      - main  # update if your branch is master or another branch
 
 jobs:
   deploy:
@@ -11,13 +12,11 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Push to Hugging Face
+      - name: Sync to Hugging Face Space
         run: |
-          git config --global user.email "abdelrahmansalembakry@gmail.com"
-          git config --global user.name "Abdelrahman Bakry"
-          git clone https://huggingface.co/spaces/Abdelrahmanbakry1111/geoai-demo
-          rsync -av . geoai-demo/ --exclude '.git'
-          cd geoai-demo
+          git clone https://huggingface.co/spaces/Abdelrahmanbakry1111/SPACE_NAME hf-space
+          rsync -av . hf-space/ --exclude '.git'
+          cd hf-space
           git add .
-          git commit -m "Update from GitHub"
-          git push https://YAbdelrahmanbakry1111:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/Abdelrahmanbakry1111/geoai-demo main
+          git commit -m "Update from GitHub" || echo "No changes to commit"
+          git push https://Abdelrahmanbakry1111:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/Abdelrahmanbakry1111/SPACE_NAME main
