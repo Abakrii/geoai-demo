@@ -1,8 +1,8 @@
 ---
 title: GeoAI Demo
 emoji: "🌱"
-colorFrom: "0a9396"
-colorTo: "94d2bd"
+colorFrom: green
+colorTo: blue
 sdk: streamlit
 sdk_version: "1.24.1"
 app_file: app.py
