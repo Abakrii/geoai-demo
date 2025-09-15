@@ -6,4 +6,6 @@ rasterio
 torch
 torchvision
 shapely
+pandas
+plotly
 git+https://github.com/opengeos/geoai.git
