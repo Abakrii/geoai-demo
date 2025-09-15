@@ -1,0 +1,8 @@
+streamlit
+leafmap
+geopandas
+matplotlib
+rasterio
+torch
+torchvision
+git+https://github.com/opengeos/geoai.git
