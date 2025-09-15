@@ -10,6 +10,9 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import io
 import json
+import hashlib
+from functools import wraps
+import pydeck as pdk
 from geoai.models import get_model
 from geoai.data import load_sample_data
 
@@ -34,6 +37,205 @@ CLASS_COLORS = {
     2: "#DEB887",  # Burlywood for Bare Soil
     3: "#696969"   # Dim Gray for Urban
 }
+
+# Caching functions
+def create_cache_key(*args, **kwargs):
+    """Create a unique cache key from arguments."""
+    key_string = str(args) + str(sorted(kwargs.items()))
+    return hashlib.md5(key_string.encode()).hexdigest()
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def load_cached_model(model_name="unet_multiclass"):
+    """Cache the ML model loading."""
+    return get_model(model_name)
+
+@st.cache_data(ttl=1800)  # Cache for 30 minutes
+def load_cached_sample_data(dataset_key):
+    """Cache sample data loading."""
+    return load_sample_data(dataset_key)
+
+@st.cache_data(ttl=1800)  # Cache for 30 minutes
+def process_image_cached(image_data, enable_ndvi=False, image_name="image"):
+    """
+    Cache image processing including segmentation and NDVI calculation.
+    
+    Args:
+        image_data: Image data to process
+        enable_ndvi: Whether to calculate NDVI
+        image_name: Name of the image for cache key
+    
+    Returns:
+        dict: Processed results including mask and NDVI data
+    """
+    # Load model (this will be cached separately)
+    model = load_cached_model()
+    
+    # Run segmentation
+    mask = model.predict(image_data)
+    
+    # Calculate NDVI if enabled
+    ndvi_data = None
+    if enable_ndvi:
+        ndvi_data = calculate_ndvi(image_data)
+    
+    return {
+        'mask': mask,
+        'ndvi_data': ndvi_data,
+        'image_name': image_name
+    }
+
+@st.cache_data(ttl=1800)  # Cache for 30 minutes
+def calculate_ndvi_cached(image_data, image_name="image"):
+    """Cache NDVI calculation."""
+    return calculate_ndvi(image_data)
+
+@st.cache_data(ttl=900)  # Cache for 15 minutes
+def calculate_polygon_stats_cached(polygon_coords, mask_data, ndvi_data=None, pixel_size_km=0.01):
+    """Cache polygon statistics calculation."""
+    return calculate_polygon_stats(polygon_coords, mask_data, ndvi_data, pixel_size_km)
+
+# 3D Visualization Functions
+def mask_to_3d_points(mask_data, class_id=None, sample_rate=0.1):
+    """
+    Convert segmentation mask to 3D points for Pydeck visualization.
+    
+    Args:
+        mask_data: Segmentation mask array
+        class_id: Specific class to visualize (None for all)
+        sample_rate: Fraction of points to sample (0.1 = 10%)
+    
+    Returns:
+        pandas.DataFrame: Points data for Pydeck
+    """
+    try:
+        # Get mask dimensions
+        height, width = mask_data.shape
+        
+        # Create coordinate grids
+        x_coords = np.arange(width)
+        y_coords = np.arange(height)
+        X, Y = np.meshgrid(x_coords, y_coords)
+        
+        # Flatten arrays
+        x_flat = X.flatten()
+        y_flat = Y.flatten()
+        mask_flat = mask_data.flatten()
+        
+        # Filter by class if specified
+        if class_id is not None:
+            mask_indices = np.where(mask_flat == class_id)[0]
+        else:
+            mask_indices = np.where(mask_flat >= 0)[0]  # All valid pixels
+        
+        # Sample points for performance
+        if sample_rate < 1.0:
+            n_points = int(len(mask_indices) * sample_rate)
+            if n_points > 0:
+                sample_indices = np.random.choice(mask_indices, n_points, replace=False)
+            else:
+                sample_indices = mask_indices
+        else:
+            sample_indices = mask_indices
+        
+        # Create points data
+        points_data = []
+        for idx in sample_indices:
+            # Convert pixel coordinates to geographic coordinates (simplified)
+            # In a real implementation, you'd use proper coordinate transformation
+            lon = 24.4 + (x_flat[idx] / width) * 0.1  # Approximate longitude
+            lat = 54.3 + (y_flat[idx] / height) * 0.1  # Approximate latitude
+            
+            # Height based on class type
+            class_type = mask_flat[idx]
+            height_value = class_type * 100  # Scale for 3D effect
+            
+            # Color based on class
+            color = CLASS_COLORS.get(class_type, [0, 0, 0, 255])
+            
+            points_data.append({
+                'lon': lon,
+                'lat': lat,
+                'height': height_value,
+                'class': class_type,
+                'class_name': CLASS_LABELS.get(class_type, 'Unknown'),
+                'color': color
+            })
+        
+        return pd.DataFrame(points_data)
+        
+    except Exception as e:
+        st.error(f"Error converting mask to 3D points: {str(e)}")
+        return pd.DataFrame()
+
+def create_3d_map_data(mask_data, ndvi_data=None):
+    """
+    Create 3D map data from segmentation mask and NDVI data.
+    
+    Args:
+        mask_data: Segmentation mask array
+        ndvi_data: NDVI data array (optional)
+    
+    Returns:
+        dict: 3D data for different layers
+    """
+    try:
+        # Create points for each class
+        layers_data = {}
+        
+        for class_id, class_name in CLASS_LABELS.items():
+            points_df = mask_to_3d_points(mask_data, class_id=class_id, sample_rate=0.05)
+            if not points_df.empty:
+                layers_data[class_name] = points_df
+        
+        # Create NDVI layer if available
+        if ndvi_data is not None:
+            ndvi_points = []
+            height, width = ndvi_data.shape
+            
+            # Sample NDVI points
+            sample_indices = np.random.choice(height * width, int(height * width * 0.02), replace=False)
+            
+            for idx in sample_indices:
+                y_idx = idx // width
+                x_idx = idx % width
+                
+                lon = 24.4 + (x_idx / width) * 0.1
+                lat = 54.3 + (y_idx / height) * 0.1
+                
+                ndvi_value = ndvi_data[y_idx, x_idx]
+                height_value = (ndvi_value + 1) * 500  # Scale NDVI to height
+                
+                # Color based on NDVI value
+                if ndvi_value > 0.6:
+                    color = [34, 139, 34, 255]  # Green
+                elif ndvi_value > 0.2:
+                    color = [255, 215, 0, 255]  # Yellow
+                elif ndvi_value > 0:
+                    color = [255, 140, 0, 255]  # Orange
+                else:
+                    color = [220, 20, 60, 255]  # Red
+                
+                ndvi_points.append({
+                    'lon': lon,
+                    'lat': lat,
+                    'height': height_value,
+                    'ndvi': ndvi_value,
+                    'color': color
+                })
+            
+            if ndvi_points:
+                layers_data['NDVI'] = pd.DataFrame(ndvi_points)
+        
+        return layers_data
+        
+    except Exception as e:
+        st.error(f"Error creating 3D map data: {str(e)}")
+        return {}
+
+@st.cache_data(ttl=1800)  # Cache 3D data creation
+def create_3d_map_data_cached(mask_data, ndvi_data=None, image_name="image"):
+    """Cache 3D map data creation."""
+    return create_3d_map_data(mask_data, ndvi_data)
 
 def calculate_polygon_stats(polygon_coords, mask_data, ndvi_data=None, pixel_size_km=0.01):
     """
@@ -366,6 +568,40 @@ with st.sidebar:
     else:
         enable_animation = False
         animation_speed = 2
+    
+    # 3D View Controls
+    st.markdown("---")
+    st.subheader("🌐 3D Visualization")
+    enable_3d = st.checkbox("Enable 3D Map View", value=False, key="3d_toggle")
+    
+    if enable_3d:
+        st.success("✅ 3D view enabled")
+        
+        # 3D visualization options
+        with st.expander("🎛️ 3D Settings"):
+            point_size = st.slider("Point Size", 1, 20, 5, key="3d_point_size")
+            elevation_scale = st.slider("Elevation Scale", 1, 10, 3, key="3d_elevation")
+            sample_rate = st.slider("Point Sampling Rate", 0.01, 0.2, 0.05, key="3d_sampling")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                show_vegetation = st.checkbox("🌱 Vegetation", value=True, key="3d_vegetation")
+                show_water = st.checkbox("💧 Water", value=True, key="3d_water")
+            with col2:
+                show_soil = st.checkbox("🏜️ Bare Soil", value=True, key="3d_soil")
+                show_urban = st.checkbox("🏙️ Urban", value=True, key="3d_urban")
+            
+            show_ndvi = st.checkbox("🌿 NDVI Layer", value=True, key="3d_ndvi")
+    else:
+        st.info("3D view disabled")
+        point_size = 5
+        elevation_scale = 3
+        sample_rate = 0.05
+        show_vegetation = True
+        show_water = True
+        show_soil = True
+        show_urban = True
+        show_ndvi = True
 
     # Polygon Tools Section
     st.markdown("---")
@@ -508,13 +744,32 @@ with st.sidebar:
                         )
     else:
         st.info("Process images to enable downloads")
+    
+    # Cache Management Section
+    st.markdown("---")
+    st.subheader("⚡ Cache Management")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🗑️ Clear Cache", key="clear_cache"):
+            # Clear all caches
+            st.cache_data.clear()
+            st.success("Cache cleared!")
+            st.rerun()
+    
+    with col2:
+        if st.button("📊 Cache Info", key="cache_info"):
+            st.info("Cache helps speed up repeated operations. Clear cache if you encounter issues.")
+    
+    # Display cache status
+    st.caption("💡 Caching improves performance for repeated operations")
 
 # Load data based on analysis mode
 if analysis_mode == "Single Image":
     # Single image processing
     if uploaded_files is None and option == "Sample data":
         dataset_key = dataset_options[selected_dataset]
-        images = [load_sample_data(dataset_key)]
+        images = [load_cached_sample_data(dataset_key)]
         image_names = [selected_dataset]
     else:
         images = [uploaded_files] if uploaded_files is not None else []
@@ -523,7 +778,7 @@ else:
     # Time series processing
     if uploaded_files is None and option == "Sample data":
         if selected_datasets:
-            images = [load_sample_data(dataset_options[ds]) for ds in selected_datasets]
+            images = [load_cached_sample_data(dataset_options[ds]) for ds in selected_datasets]
             image_names = selected_datasets
         else:
             images = []
@@ -541,11 +796,11 @@ if images:
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # Load pretrained multi-class segmentation model
+        # Load pretrained multi-class segmentation model (cached)
         status_text.text("Loading AI model...")
-        model = get_model("unet_multiclass")
+        model = load_cached_model()
         
-        # Process all images
+        # Process all images with caching
         all_masks = []
         all_ndvi_data = []
         time_series_data = []
@@ -557,16 +812,23 @@ if images:
             progress_bar.progress(progress)
             status_text.text(f"Processing image {i+1}/{total_images}: {image_names[i]}")
             
-            # Segmentation
-            with st.spinner(f"Running segmentation on {image_names[i]}..."):
-                mask = model.predict(image)
+            # Use cached processing function
+            with st.spinner(f"Processing {image_names[i]}..."):
+                # Create a unique cache key for this image
+                cache_key = f"{image_names[i]}_{enable_ndvi}_{hash(str(image))}"
+                
+                # Process image with caching
+                result = process_image_cached(
+                    image_data=image,
+                    enable_ndvi=enable_ndvi,
+                    image_name=cache_key
+                )
+                
+                mask = result['mask']
+                ndvi_data = result['ndvi_data']
+                
                 all_masks.append(mask)
-            
-            # NDVI calculation if enabled
-            ndvi_data = None
-            if enable_ndvi:
-                with st.spinner(f"Calculating NDVI for {image_names[i]}..."):
-                    ndvi_data = calculate_ndvi(image)
+                if ndvi_data is not None:
                     all_ndvi_data.append(ndvi_data)
             
             # Calculate vegetation percentage for time series
@@ -593,6 +855,9 @@ if images:
         
         # Success message
         st.success(f"Successfully processed {len(images)} images!")
+        
+        # Cache status indicator
+        st.info("⚡ Results cached for faster future processing")
     
     # Results section with improved layout
     with st.container():
@@ -701,10 +966,12 @@ if images:
         st.header("🗺️ Interactive Map")
         
         # Map controls
-        col1, col2 = st.columns([3, 1])
+        col1, col2, col3 = st.columns([2, 1, 1])
         with col1:
             if len(images) > 1 and enable_animation:
                 st.subheader("🎬 Animated Map View")
+            elif enable_3d:
+                st.subheader("🌐 3D Map View")
             else:
                 if len(images) > 1:
                     st.subheader("🗺️ Map View (First Image)")
@@ -718,10 +985,116 @@ if images:
                 else:
                     st.info("📊 Static view")
         
+        with col3:
+            if enable_3d:
+                st.success("🌐 3D Active")
+            else:
+                st.info("📐 2D View")
+        
         # Map container with responsive height
         map_container = st.container()
         
-        if len(images) > 1 and enable_animation:
+        if enable_3d:
+            # 3D Map View
+            with map_container:
+                st.subheader("🌐 3D Visualization")
+                
+                # Create 3D data
+                with st.spinner("Generating 3D data..."):
+                    mask_data = all_masks[0]
+                    ndvi_data = all_ndvi_data[0] if len(all_ndvi_data) > 0 else None
+                    
+                    # Create 3D map data
+                    layers_data = create_3d_map_data_cached(
+                        mask_data, 
+                        ndvi_data, 
+                        f"{image_names[0]}_3d"
+                    )
+                
+                if layers_data:
+                    # Create Pydeck layers
+                    layers = []
+                    
+                    # Add land cover layers
+                    layer_visibility = {
+                        'Vegetation': show_vegetation,
+                        'Water': show_water,
+                        'Bare Soil': show_soil,
+                        'Urban': show_urban
+                    }
+                    
+                    for class_name, df in layers_data.items():
+                        if class_name in layer_visibility and layer_visibility[class_name] and not df.empty:
+                            layer = pdk.Layer(
+                                'ScatterplotLayer',
+                                data=df,
+                                get_position=['lon', 'lat'],
+                                get_color='color',
+                                get_radius=point_size,
+                                get_elevation='height',
+                                elevation_scale=elevation_scale,
+                                pickable=True,
+                                opacity=0.8,
+                                name=class_name
+                            )
+                            layers.append(layer)
+                    
+                    # Add NDVI layer if available
+                    if show_ndvi and 'NDVI' in layers_data:
+                        ndvi_df = layers_data['NDVI']
+                        if not ndvi_df.empty:
+                            ndvi_layer = pdk.Layer(
+                                'ScatterplotLayer',
+                                data=ndvi_df,
+                                get_position=['lon', 'lat'],
+                                get_color='color',
+                                get_radius=point_size * 0.8,
+                                get_elevation='height',
+                                elevation_scale=elevation_scale * 1.5,
+                                pickable=True,
+                                opacity=0.6,
+                                name='NDVI'
+                            )
+                            layers.append(ndvi_layer)
+                    
+                    if layers:
+                        # Create Pydeck deck
+                        deck = pdk.Deck(
+                            map_style='mapbox://styles/mapbox/satellite-v9',
+                            initial_view_state=pdk.ViewState(
+                                latitude=54.35,
+                                longitude=24.45,
+                                zoom=8,
+                                pitch=45,
+                                bearing=0
+                            ),
+                            layers=layers,
+                            tooltip={
+                                'html': '<b>{class_name}</b><br/>Height: {height}m<br/>NDVI: {ndvi}',
+                                'style': {
+                                    'backgroundColor': 'steelblue',
+                                    'color': 'white'
+                                }
+                            }
+                        )
+                        
+                        # Display the 3D map
+                        st.pydeck_chart(deck, use_container_width=True)
+                        
+                        # 3D map controls
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Total Points", sum(len(df) for df in layers_data.values()))
+                        with col2:
+                            st.metric("Layers", len(layers))
+                        with col3:
+                            st.metric("Sampling Rate", f"{sample_rate*100:.1f}%")
+                    else:
+                        st.warning("No data available for 3D visualization")
+                else:
+                    st.error("Failed to generate 3D data")
+        
+        elif len(images) > 1 and enable_animation:
             # Animated map view
             with map_container:
                 # Create animation placeholder
@@ -808,9 +1181,9 @@ if images:
                             # Convert to (lat, lon) format
                             polygon_coords = [(coord[1], coord[0]) for coord in coords]
                             
-                            # Calculate statistics
+                            # Calculate statistics with caching
                             ndvi_data = all_ndvi_data[0] if len(all_ndvi_data) > 0 else None
-                            stats = calculate_polygon_stats(polygon_coords, all_masks[0], ndvi_data)
+                            stats = calculate_polygon_stats_cached(polygon_coords, all_masks[0], ndvi_data)
                             if stats:
                                 st.session_state.polygon_stats = stats
                                 st.rerun()
