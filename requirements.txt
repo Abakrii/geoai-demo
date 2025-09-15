@@ -5,4 +5,8 @@ matplotlib
 rasterio
 torch
 torchvision
+shapely
+pandas
+plotly
+pydeck
 git+https://github.com/opengeos/geoai.git
