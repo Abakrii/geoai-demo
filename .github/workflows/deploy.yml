@@ -13,8 +13,8 @@ jobs:
 
       - name: Push to Hugging Face
         run: |
-          git config --global user.email "you@example.com"
-          git config --global user.name "Your Name"
+          git config --global user.email "abdelrahmansalembakry@gmail.com"
+          git config --global user.name "Abdelrahman Bakry"
           git clone https://huggingface.co/spaces/Abdelrahmanbakry1111/geoai-demo
           rsync -av . geoai-demo/ --exclude '.git'
           cd geoai-demo
